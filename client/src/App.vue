@@ -4,6 +4,10 @@ import axios from 'axios';
 import confetti from 'canvas-confetti';
 import ItemCard from './components/ItemCard.vue';
 import ItemDetailsModal from './components/ItemDetailsModal.vue';
+import Toast from './components/Toast.vue';
+import { useToast } from './composables/useToast';
+
+const toast = useToast();
 
 // ==================== 認證與視圖狀態 ====================
 const token = ref(localStorage.getItem('token') || '');
@@ -11,6 +15,10 @@ const username = ref(localStorage.getItem('username') || '');
 const userScore = ref(100);
 const currentView = ref(token.value ? 'gallery' : 'auth'); // 已登入則進首頁，未登入則進登入頁
 const authMode = ref('login'); // 'login' 或 'register'
+const isAuthLoading = ref(false);
+const isItemsLoading = ref(true);
+const isSubmittingBorrow = ref(false);
+const isSubmittingReturn = ref(false);
 
 // 登入/註冊表單
 const authForm = ref({
@@ -44,6 +52,7 @@ const currentDate = ref(new Date(2026, 5)); // 預設為 2026 年 6 月 (月份�
 
 // 1. 取得所有物品資料
 const fetchItems = async () => {
+  isItemsLoading.value = true;
   try {
     const response = await axios.get('http://localhost:3000/api/items');
     if (response.data && response.data.success) {
@@ -51,6 +60,9 @@ const fetchItems = async () => {
     }
   } catch (error) {
     console.error('獲取物品失敗:', error);
+    toast.error('獲取物品失敗，請檢查連線');
+  } finally {
+    isItemsLoading.value = false;
   }
 };
 
@@ -88,10 +100,11 @@ const handleAuth = async () => {
   const pwd = authForm.value.password.trim();
 
   if (!url || !pwd) {
-    alert('請填寫帳號與密碼！');
+    toast.warning('請填寫帳號與密碼！');
     return;
   }
 
+  isAuthLoading.value = true;
   try {
     if (authMode.value === 'register') {
       // 註冊
@@ -100,7 +113,7 @@ const handleAuth = async () => {
         password: pwd
       });
       if (response.data && response.data.success) {
-        alert('註冊成功！請直接登入。');
+        toast.success('註冊成功！請直接登入。');
         authMode.value = 'login';
         authForm.value.password = '';
       }
@@ -120,7 +133,7 @@ const handleAuth = async () => {
         localStorage.setItem('token', token.value);
         localStorage.setItem('username', username.value);
         
-        alert('登入成功！');
+        toast.success(`登入成功！歡迎，${username.value}`);
         currentView.value = 'gallery';
         authForm.value = { username: '', password: '' };
         
@@ -131,7 +144,9 @@ const handleAuth = async () => {
     }
   } catch (error) {
     const msg = error.response?.data?.message || '操作失敗，請重新確認帳密！';
-    alert(msg);
+    toast.error(msg);
+  } finally {
+    isAuthLoading.value = false;
   }
 };
 
@@ -143,23 +158,23 @@ const handleLogout = () => {
   localStorage.removeItem('username');
   cart.value = [];
   currentView.value = 'auth';
-  alert('已成功登出。');
+  toast.info('已成功登出。');
 };
 
 // 加入借用車
 const handleAddToCart = (item) => {
   if (!token.value) {
-    alert('請先登入系統！');
+    toast.warning('請先登入系統！');
     currentView.value = 'auth';
     return;
   }
   if (userScore.value < 80) {
-    alert(`您的信用積分為 ${userScore.value}，低於 80 分，已被暫停借用權限！`);
+    toast.error(`您的信用積分為 ${userScore.value}，低於 80 分，已被暫停借用權限！`);
     return;
   }
   const isExist = cart.value.some(cartItem => cartItem.id === item.id);
   if (isExist) {
-    alert(`【${item.name}】已在借用清單中！`);
+    toast.info(`【${item.name}】已在借用清單中！`);
     return;
   }
   
@@ -167,6 +182,7 @@ const handleAddToCart = (item) => {
     ...item,
     borrow_quantity: 1
   });
+  toast.success(`已將【${item.name}】加入清單`);
 };
 
 // 處理借用車內物品數量增減
@@ -175,11 +191,11 @@ const handleQuantityChange = (cartItem, delta) => {
   const available = cartItem.total_quantity - cartItem.borrowed_quantity;
   if (newQty < 1) return;
   if (newQty > 3) {
-    alert('單一物品每次最多只能借用 3 個！');
+    toast.warning('單一物品每次最多只能借用 3 個！');
     return;
   }
   if (newQty > available) {
-    alert(`【${cartItem.name}】可用庫存不足，目前僅剩 ${available} 個！`);
+    toast.warning(`【${cartItem.name}】可用庫存不足，目前僅剩 ${available} 個！`);
     return;
   }
   cartItem.borrow_quantity = newQty;
@@ -188,7 +204,7 @@ const handleQuantityChange = (cartItem, delta) => {
 // 加入候補排隊
 const handleJoinWaitlist = async (item) => {
   if (!token.value) {
-    alert('請先登入系統！');
+    toast.warning('請先登入系統！');
     currentView.value = 'auth';
     return;
   }
@@ -197,10 +213,10 @@ const handleJoinWaitlist = async (item) => {
       headers: { Authorization: `Bearer ${token.value}` }
     });
     if (response.data && response.data.success) {
-      alert(response.data.message);
+      toast.success(response.data.message);
     }
   } catch (error) {
-    alert(error.response?.data?.message || '加入候補失敗');
+    toast.error(error.response?.data?.message || '加入候補失敗');
   }
 };
 
@@ -212,14 +228,15 @@ const handleRemoveFromCart = (index) => {
 // 送出借用申請
 const submitBorrowRequest = async () => {
   if (cart.value.length === 0) {
-    alert('借用車為空！');
+    toast.warning('借用車為空！');
     return;
   }
   if (!borrowerName.value.trim()) {
-    alert('請輸入借用人姓名/學號！');
+    toast.warning('請輸入借用人姓名/學號！');
     return;
   }
 
+  isSubmittingBorrow.value = true;
   try {
     // 預設 7 天後歸還
     const today = new Date();
@@ -248,7 +265,7 @@ const submitBorrowRequest = async () => {
       colors: ['#00d2ff', '#00cc7e', '#f59e0b']
     });
 
-    alert('借用申請提交成功！請至「我的租借箱」查看歸還細節。');
+    toast.success('借用申請提交成功！請至「我的租借箱」查看歸還細節。');
     cart.value = [];
     
     // 刷新資料
@@ -257,7 +274,9 @@ const submitBorrowRequest = async () => {
   } catch (error) {
     console.error(error);
     const msg = error.response?.data?.message || '送出失敗，請重試！';
-    alert(msg);
+    toast.error(msg);
+  } finally {
+    isSubmittingBorrow.value = false;
   }
 };
 
@@ -275,10 +294,11 @@ const openReturnModal = (record) => {
 const confirmReturnItem = async () => {
   if (!recordToReturn.value) return;
   if (!returnPassword.value.trim()) {
-    alert('請輸入負責人歸還密碼！');
+    toast.warning('請輸入負責人歸還密碼！');
     return;
   }
   
+  isSubmittingReturn.value = true;
   try {
     const response = await axios.post(`http://localhost:3000/api/records/${recordToReturn.value.id}/return`, {
       password: returnPassword.value
@@ -296,7 +316,7 @@ const confirmReturnItem = async () => {
       }
       
       const scoreMsg = response.data.scoreChange > 0 ? `+${response.data.scoreChange}` : response.data.scoreChange;
-      alert(`${response.data.message}\n信用積分變更: ${scoreMsg}`);
+      toast.success(`${response.data.message} 積分變更: ${scoreMsg}`);
       
       showReturnModal.value = false;
       recordToReturn.value = null;
@@ -309,7 +329,9 @@ const confirmReturnItem = async () => {
     }
   } catch (error) {
     const msg = error.response?.data?.message || '歸還失敗，請重試！';
-    alert(msg);
+    toast.error(msg);
+  } finally {
+    isSubmittingReturn.value = false;
   }
 };
 
@@ -397,6 +419,7 @@ onMounted(() => {
 
 <template>
   <div class="app-layout">
+    <Toast />
     <!-- 頂部導覽列 -->
     <header class="app-header">
       <div class="header-container">
@@ -437,9 +460,9 @@ onMounted(() => {
 
     <!-- 主頁面渲染 -->
     <main class="app-main">
-      
+      <Transition name="page" mode="out-in">
       <!-- ==================== View 1: 登入註冊頁面 ==================== -->
-      <section v-if="currentView === 'auth'" class="auth-view">
+      <section v-if="currentView === 'auth'" class="auth-view" key="auth">
         <div class="auth-card">
           <div class="auth-tabs">
             <button 
@@ -479,15 +502,16 @@ onMounted(() => {
               />
             </div>
             
-            <button type="submit" class="btn-auth-submit">
-              {{ authMode === 'login' ? '立即登入' : '註冊新帳號' }}
+            <button type="submit" class="btn-auth-submit" :disabled="isAuthLoading">
+              <span v-if="isAuthLoading" class="spinner-inline"></span>
+              <span v-else>{{ authMode === 'login' ? '立即登入' : '註冊新帳號' }}</span>
             </button>
           </form>
         </div>
       </section>
 
       <!-- ==================== View 2: 租借大廳頁面 ==================== -->
-      <div v-else-if="currentView === 'gallery'" class="gallery-view">
+      <div v-else-if="currentView === 'gallery'" class="gallery-view" key="gallery">
         <!-- 搜尋與篩選區域 -->
         <div class="filter-bar">
           <input 
@@ -519,8 +543,21 @@ onMounted(() => {
               <span class="count-badge">共 {{ filteredItems.length }} 項結果</span>
             </div>
             
-            <div v-if="filteredItems.length === 0" class="no-items-placeholder">
-              無符合篩選條件的物品
+            <div v-if="isItemsLoading" class="items-grid">
+              <div v-for="i in 6" :key="i" class="grid-item skeleton-card">
+                <div class="skeleton-img"></div>
+                <div class="skeleton-content">
+                  <div class="skeleton-text title"></div>
+                  <div class="skeleton-text desc"></div>
+                  <div class="skeleton-text desc short"></div>
+                </div>
+              </div>
+            </div>
+            
+            <div v-else-if="filteredItems.length === 0" class="no-items-placeholder empty-state">
+              <div class="empty-state-icon">🔍</div>
+              <p>無符合篩選條件的物品</p>
+              <button class="btn-clear-filter" @click="searchQuery=''; selectedCategory='全部'">清除篩選</button>
             </div>
             
             <div v-else class="items-grid">
@@ -541,10 +578,10 @@ onMounted(() => {
               <h2 class="section-title">我的借用清單</h2>
               
               <!-- 空狀態 -->
-              <div v-if="cart.length === 0" class="cart-empty">
-                <span class="empty-icon">📥</span>
+              <div v-if="cart.length === 0" class="cart-empty empty-state">
+                <div class="empty-state-icon">📥</div>
                 <p>借用清單目前為空</p>
-                <p class="empty-hint">點選物品卡片的「加入借用車」開始加選</p>
+                <p class="empty-hint">去左側物品大廳挑選看看吧！</p>
               </div>
 
               <!-- 清單內容 -->
@@ -587,8 +624,9 @@ onMounted(() => {
                     />
                   </div>
 
-                  <button class="btn-submit" @click="submitBorrowRequest">
-                    確認送出借用申請
+                  <button class="btn-submit" @click="submitBorrowRequest" :disabled="isSubmittingBorrow">
+                    <span v-if="isSubmittingBorrow" class="spinner-inline"></span>
+                    <span v-else>確認送出借用申請</span>
                   </button>
                 </div>
               </div>
@@ -598,7 +636,7 @@ onMounted(() => {
       </div>
 
       <!-- ==================== View 3: 我的租借箱分頁 ==================== -->
-      <div v-else-if="currentView === 'cabinet'" class="cabinet-view">
+      <div v-else-if="currentView === 'cabinet'" class="cabinet-view" key="cabinet">
         <div class="split-container">
           
           <!-- 左側：個人租借歷史清單 -->
@@ -745,7 +783,10 @@ onMounted(() => {
                 
                 <div class="return-card-footer" style="margin-top: 16px; display: flex; justify-content: flex-end; gap: 12px;">
                   <button class="btn-secondary" @click="showReturnModal = false" style="background-color: #f1f5f9; border: 1px solid #cbd5e1; color: #475569; padding: 8px 16px; border-radius: 8px; font-weight: 600; cursor: pointer;">取消</button>
-                  <button class="btn-primary btn-submit-return" @click="confirmReturnItem" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; border: none; padding: 8px 16px; border-radius: 8px; font-weight: 600; cursor: pointer;">確認歸還</button>
+                  <button class="btn-primary btn-submit-return" @click="confirmReturnItem" :disabled="isSubmittingReturn" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; border: none; padding: 8px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; min-width: 100px;">
+                    <span v-if="isSubmittingReturn" class="spinner-inline"></span>
+                    <span v-else>確認歸還</span>
+                  </button>
                 </div>
               </div>
             </transition>
@@ -755,7 +796,7 @@ onMounted(() => {
       </div>
 
       <!-- ==================== View 4: 規則與積分說明 ==================== -->
-      <div v-else-if="currentView === 'rules'" class="rules-view">
+      <div v-else-if="currentView === 'rules'" class="rules-view" key="rules">
         <h2 class="rules-main-title">📜 規則與積分說明</h2>
         
         <div class="rules-grid">
@@ -799,7 +840,7 @@ onMounted(() => {
           </div>
         </div>
       </div>
-
+      </Transition>
 
 
       <!-- ==================== Modal: 物品詳情與評價 ==================== -->
@@ -815,13 +856,159 @@ onMounted(() => {
 </template>
 
 <style>
-/* 全域微電商現代質感風格 */
+/* ==================== 頁面轉場動畫 (Liquid Glass/Smooth Fade) ==================== */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(10px) scale(0.98);
+}
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.98);
+}
+
+/* ==================== Loading Spinner & Skeleton ==================== */
+.spinner-inline {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: #ffffff;
+  animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+.skeleton-card {
+  background: #ffffff;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+}
+
+.skeleton-img {
+  width: 100%;
+  padding-top: 66.67%;
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s infinite;
+}
+
+.skeleton-content {
+  padding: 20px;
+}
+
+.skeleton-text {
+  height: 14px;
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s infinite;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.skeleton-text.title {
+  height: 20px;
+  width: 70%;
+  margin-bottom: 16px;
+}
+
+.skeleton-text.short {
+  width: 40%;
+}
+
+@keyframes skeleton-loading {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ==================== Empty States ==================== */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(8px);
+  border-radius: 20px;
+  border: 1px dashed #cbd5e1;
+}
+
+.empty-state-icon {
+  font-size: 3rem;
+  margin-bottom: 16px;
+  opacity: 0.8;
+  animation: float 3s ease-in-out infinite;
+}
+
+.btn-clear-filter {
+  margin-top: 16px;
+  background: #f1f5f9;
+  border: none;
+  color: #475569;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-clear-filter:hover {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+@keyframes float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+  100% { transform: translateY(0px); }
+}
+
+/* ==================== 響應式排版 (RWD) ==================== */
+@media (max-width: 1024px) {
+  .split-container {
+    flex-direction: column;
+  }
+  
+  .cart-sidebar, .calendar-sidebar {
+    width: 100%;
+    margin-top: 24px;
+  }
+  
+  .sidebar-sticky {
+    position: relative;
+    top: 0;
+  }
+  
+  .app-title {
+    font-size: 1.2rem;
+  }
+}
+
+/* ==================== 全域微電商現代質感風格 ==================== */
 body {
   margin: 0;
-  font-family: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background-color: #f6f8fa;
+  font-family: 'Inter', 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
   color: #1e293b;
   -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
 }
 
 /* 佈局結構 */
@@ -832,12 +1019,14 @@ body {
 }
 
 .app-header {
-  background-color: rgba(255, 255, 255, 0.85);
-  border-bottom: 1px solid rgba(226, 232, 240, 0.8);
+  background-color: rgba(255, 255, 255, 0.65);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.03);
   position: sticky;
   top: 0;
   z-index: 100;
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .header-container {
@@ -1017,20 +1206,21 @@ body {
 .btn-auth-submit {
   width: 100%;
   border: none;
-  background: linear-gradient(135deg, #00d2ff 0%, #00cc7e 100%);
+  background: linear-gradient(135deg, #0f172a 0%, #334155 100%);
   color: #ffffff;
   padding: 14px;
   border-radius: 14px;
-  font-weight: 700;
+  font-weight: 600;
   font-size: 1rem;
+  letter-spacing: 0.5px;
   cursor: pointer;
-  box-shadow: 0 6px 20px rgba(0, 204, 126, 0.2);
-  transition: all 0.3s;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .btn-auth-submit:hover {
   transform: translateY(-2px);
-  filter: brightness(1.03);
+  box-shadow: 0 12px 25px rgba(15, 23, 42, 0.2);
 }
 
 /* ==================== 租借大廳樣式 ==================== */
@@ -1428,11 +1618,14 @@ body {
 }
 
 .calendar-box {
-  background-color: #ffffff;
-  border: 1px solid #e2e8f0;
+  background-color: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
   border-radius: 20px;
   padding: 24px;
-  box-shadow: 0 4px 25px rgba(0, 0, 0, 0.02);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.04);
+  transition: all 0.3s ease;
 }
 
 .calendar-header {
@@ -1443,8 +1636,8 @@ body {
 }
 
 .calendar-btn {
-  background: none;
-  border: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(226, 232, 240, 0.6);
   width: 32px;
   height: 32px;
   border-radius: 8px;
@@ -1454,11 +1647,13 @@ body {
   justify-content: center;
   color: #475569;
   transition: all 0.3s;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.02);
 }
 
 .calendar-btn:hover {
-  background-color: #f1f5f9;
+  background-color: #ffffff;
   border-color: #cbd5e1;
+  transform: scale(1.05);
 }
 
 .calendar-month-title {
@@ -1486,16 +1681,23 @@ body {
 
 .calendar-day {
   aspect-ratio: 1;
-  background-color: #f8fafc;
-  border-radius: 8px;
+  background-color: rgba(255, 255, 255, 0.4);
+  border-radius: 10px;
   padding: 4px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   position: relative;
-  border: 1px solid #f1f5f9;
+  border: 1px solid rgba(255, 255, 255, 0.5);
   min-height: 42px;
   box-sizing: border-box;
+  transition: all 0.3s ease;
+}
+
+.calendar-day:hover:not(.empty) {
+  background-color: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  transform: translateY(-1px);
 }
 
 .calendar-day.empty {
