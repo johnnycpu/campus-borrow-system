@@ -4,6 +4,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,6 +13,18 @@ const JWT_SECRET = process.env.JWT_SECRET || 'campus-item-borrow-secret-key-2026
 // 啟用 CORS 與 JSON 解析中介軟體
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Multer setup
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/')
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + path.extname(file.originalname))
+  }
+});
+const upload = multer({ storage: storage });
 
 // 設定 SQLite 資料庫連線路徑 (同目錄下的 database.db)
 const dbPath = path.join(__dirname, 'database.db');
@@ -126,6 +139,32 @@ function initializeDatabase() {
       if (err) console.error('建立 reviews 資料表失敗:', err.message);
       else console.log('reviews 資料表檢查/建立成功。');
     });
+
+    // 6. 建立 notifications 資料表
+    db.run(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        is_read INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id)
+      )
+    `);
+
+    // 7. 建立 messages 資料表
+    db.run(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        lessor_name TEXT NOT NULL,
+        sender TEXT NOT NULL, 
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id)
+      )
+    `);
 
     // 5. 建立 waitlists 資料表 (候補)
     db.run(`
@@ -585,6 +624,117 @@ app.post('/api/items/:id/waitlist', authenticateToken, (req, res) => {
         res.json({ success: true, message: '成功加入候補！當物品歸還時，系統將保留給您。' });
       });
     });
+  });
+});
+
+// ==================== 通知系統 API ====================
+app.get('/api/notifications', authenticateToken, (req, res) => {
+  db.all('SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC', [req.user.id], (err, rows) => {
+    if (err) return res.status(500).json({ success: false, message: '獲取通知失敗' });
+    res.json({ success: true, notifications: rows });
+  });
+});
+
+app.put('/api/notifications/read', authenticateToken, (req, res) => {
+  db.run('UPDATE notifications SET is_read = 1 WHERE user_id = ?', [req.user.id], (err) => {
+    if (err) return res.status(500).json({ success: false, message: '更新通知狀態失敗' });
+    res.json({ success: true });
+  });
+});
+
+// ==================== 聯絡室 API ====================
+app.get('/api/lessors', authenticateToken, (req, res) => {
+  // 取得系統中所有獨立的出租單位 (由 return_location 決定)
+  db.all('SELECT DISTINCT return_location as name FROM items WHERE return_location IS NOT NULL AND return_location != ""', [], (err, rows) => {
+    if (err) return res.status(500).json({ success: false });
+    res.json({ success: true, lessors: rows });
+  });
+});
+
+app.get('/api/messages/:lessor_name', authenticateToken, (req, res) => {
+  const lessorName = req.params.lessor_name;
+  const targetUserId = req.query.user_id ? req.query.user_id : req.user.id;
+  
+  db.all('SELECT * FROM messages WHERE user_id = ? AND lessor_name = ? ORDER BY id ASC', [targetUserId, lessorName], (err, rows) => {
+    if (err) return res.status(500).json({ success: false });
+    res.json({ success: true, messages: rows });
+  });
+});
+
+app.post('/api/messages', authenticateToken, (req, res) => {
+  const { lessor_name, content, target_user_id } = req.body;
+  const sender = req.user.role === 'admin' ? 'lessor' : 'student';
+  const userId = req.user.role === 'admin' ? target_user_id : req.user.id;
+  const createdAt = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
+  
+  db.run('INSERT INTO messages (user_id, lessor_name, sender, content, created_at) VALUES (?, ?, ?, ?, ?)',
+    [userId, lessor_name, sender, content, createdAt],
+    function(err) {
+      if (err) return res.status(500).json({ success: false });
+      res.json({ success: true, message: { id: this.lastID, user_id: userId, lessor_name, sender, content, created_at: createdAt } });
+    }
+  );
+});
+
+// ==================== 管理員物品管理 API ====================
+app.post('/api/admin/items', authenticateToken, upload.single('image'), (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ success: false, message: '權限不足' });
+  
+  // 支援原本的圖片網址(從 req.body.image) 或 實際檔案(從 req.file)
+  const { name, category, description, deposit, total_quantity, return_location } = req.body;
+  const image = req.file ? 'https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/uploads/' + req.file.filename : req.body.image;
+  
+  db.run(`INSERT INTO items (name, category, image, description, deposit, total_quantity, borrowed_quantity, return_location, status) 
+          VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'available')`,
+    [name, category, image, description, deposit, total_quantity, return_location],
+    function(err) {
+      if (err) return res.status(500).json({ success: false, message: '上架失敗' });
+      res.json({ success: true, message: '上架成功' });
+    }
+  );
+});
+
+app.put('/api/admin/items/:id', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ success: false, message: '權限不足' });
+  const { total_quantity, status } = req.body;
+  const itemId = req.params.id;
+  
+  db.get('SELECT name, total_quantity, borrowed_quantity FROM items WHERE id = ?', [itemId], (err, row) => {
+    if (err || !row) return res.status(500).json({ success: false });
+    
+    const isRestock = total_quantity > row.total_quantity;
+    const finalStatus = status !== undefined ? status : (total_quantity > row.borrowed_quantity ? 'available' : 'unavailable');
+    
+    db.run('UPDATE items SET total_quantity = ?, status = ? WHERE id = ?', [total_quantity, finalStatus, itemId], (updateErr) => {
+      if (updateErr) return res.status(500).json({ success: false, message: '更新失敗' });
+      
+      if (isRestock) {
+        db.get('SELECT user_id FROM waitlists WHERE item_id = ? AND status = "waiting" ORDER BY id ASC LIMIT 1', [itemId], (waitErr, waitRow) => {
+          if (!waitErr && waitRow) {
+             const notifTitle = "候補通知";
+             const notifMsg = `您排隊候補的「${row.name}」已有庫存，請盡速前往大廳借用！`;
+             const createdAt = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
+             db.run('INSERT INTO notifications (user_id, title, message, created_at) VALUES (?, ?, ?, ?)', [waitRow.user_id, notifTitle, notifMsg, createdAt]);
+             
+             db.run('UPDATE waitlists SET status = "notified" WHERE user_id = ? AND item_id = ?', [waitRow.user_id, itemId]);
+          }
+        });
+      }
+      
+      res.json({ success: true, message: '更新成功' });
+    });
+  });
+});
+
+app.get('/api/admin/conversations', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ success: false });
+  db.all(`
+    SELECT DISTINCT m.user_id, m.lessor_name, u.username 
+    FROM messages m 
+    JOIN users u ON m.user_id = u.id
+  `, [], (err, rows) => {
+    if (err) return res.status(500).json({ success: false });
+    res.json({ success: true, conversations: rows });
   });
 });
 

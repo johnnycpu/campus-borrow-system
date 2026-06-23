@@ -13,7 +13,8 @@ const toast = useToast();
 const token = ref(localStorage.getItem('token') || '');
 const username = ref(localStorage.getItem('username') || '');
 const userScore = ref(100);
-const currentView = ref(token.value ? 'gallery' : 'auth'); // 已登入則進首頁，未登入則進登入頁
+const userRole = ref(localStorage.getItem('role') || 'student');
+const currentView = ref(token.value ? (localStorage.getItem('role') === 'admin' ? 'admin' : 'gallery') : 'auth'); // 已登入則進首頁，未登入則進登入頁
 const authMode = ref('login'); // 'login' 或 'register'
 const isAuthLoading = ref(false);
 const isItemsLoading = ref(true);
@@ -107,10 +108,10 @@ const handleAuth = async () => {
   isAuthLoading.value = true;
   try {
     if (authMode.value === 'register') {
-      // 註冊
       const response = await axios.post('https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/auth/register', {
         username: url,
-        password: pwd
+        password: pwd,
+        role: authForm.value.isAdmin ? 'admin' : 'student'
       });
       if (response.data && response.data.success) {
         toast.success('註冊成功！請直接登入。');
@@ -124,17 +125,28 @@ const handleAuth = async () => {
         password: pwd
       });
       if (response.data && response.data.success) {
+        if (authMode.value === 'admin' && response.data.user.role !== 'admin') {
+          toast.error('此帳號無管理員權限！');
+          return;
+        }
         token.value = response.data.token;
         username.value = response.data.user.username;
         userScore.value = response.data.user.score || 100;
         borrowerName.value = response.data.user.username;
         
         // 寫入 localStorage
+        userRole.value = response.data.user.role || 'student';
+        localStorage.setItem('role', userRole.value);
         localStorage.setItem('token', token.value);
         localStorage.setItem('username', username.value);
         
         toast.success(`登入成功！歡迎，${username.value}`);
-        currentView.value = 'gallery';
+        if (userRole.value === 'admin') {
+          currentView.value = 'admin';
+          fetchAdminItems();
+        } else {
+          currentView.value = 'gallery';
+        }
         authForm.value = { username: '', password: '' };
         
         // 載入資料
@@ -156,6 +168,8 @@ const handleLogout = () => {
   username.value = '';
   localStorage.removeItem('token');
   localStorage.removeItem('username');
+  localStorage.removeItem('role');
+  userRole.value = 'student';
   cart.value = [];
   currentView.value = 'auth';
   toast.info('已成功登出。');
@@ -407,12 +421,172 @@ const calendarTitle = computed(() => {
   return `${year} 年 ${month} 月`;
 });
 
+
+// ==================== 智能通知與儀表板狀態 ====================
+const showNotifications = ref(false);
+const notifications = ref([]);
+const unreadCount = computed(() => notifications.value.filter(n => !n.read).length);
+
+const fetchNotifications = async () => {
+  try {
+    const res = await axios.get('https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/notifications', { headers: { Authorization: `Bearer ${token.value}` } });
+    if (res.data.success) {
+      notifications.value = res.data.notifications.map(n => ({
+        id: n.id, title: n.title, message: n.message, read: n.is_read === 1, time: n.created_at
+      }));
+    }
+  } catch(e) {}
+};
+
+const markNotificationsRead = async () => {
+  notifications.value.forEach(n => n.read = true);
+  try {
+    await axios.put('https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/notifications/read', {}, { headers: { Authorization: `Bearer ${token.value}` } });
+  } catch(e) {}
+};
+
+
+// 簡單的圓餅圖統計資料 (利用 CSS conic-gradient)
+const categoryStats = computed(() => {
+  const stats = { '攝影器材': 0, '樂器': 0, '活動器材': 0 };
+  myRecords.value.forEach(r => {
+    if (stats[r.item_category] !== undefined) {
+      stats[r.item_category]++;
+    }
+  });
+  const total = myRecords.value.length || 1;
+  return {
+    photo: (stats['攝影器材'] / total) * 100,
+    music: (stats['樂器'] / total) * 100,
+    activity: (stats['活動器材'] / total) * 100
+  };
+});
+
 // 掛載載入
+
+
+// ==================== 管理員與聯絡室狀態 ====================
+const adminItems = ref([]);
+const newItemForm = ref({ name: '', category: '攝影器材', image: '', description: '', deposit: 0, total_quantity: 1, return_location: '系辦公室' });
+const isAdminLoading = ref(false);
+const imageFile = ref(null);
+
+const handleImageUpload = (e) => {
+  if (e.target.files.length > 0) {
+    imageFile.value = e.target.files[0];
+  }
+};
+
+const showChatRoom = ref(false);
+const chatLessors = ref([]);
+const currentChatLessor = ref('');
+const chatMessages = ref([]);
+const chatInput = ref('');
+const chatTargetUserId = ref(null);
+
+const fetchAdminItems = async () => {
+  try {
+    const res = await axios.get('https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/items');
+    if (res.data.success) adminItems.value = res.data.data;
+  } catch(e) {}
+};
+
+const submitNewItem = async () => {
+  isAdminLoading.value = true;
+  try {
+    const formData = new FormData();
+    formData.append('name', newItemForm.value.name);
+    formData.append('category', newItemForm.value.category);
+    formData.append('description', newItemForm.value.description);
+    formData.append('deposit', newItemForm.value.deposit);
+    formData.append('total_quantity', newItemForm.value.total_quantity);
+    formData.append('return_location', newItemForm.value.return_location);
+    if (imageFile.value) {
+      formData.append('image', imageFile.value);
+    } else {
+      formData.append('image', newItemForm.value.image);
+    }
+
+    const res = await axios.post('https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/admin/items', formData, { 
+      headers: { 
+        Authorization: `Bearer ${token.value}`,
+        'Content-Type': 'multipart/form-data'
+      } 
+    });
+    if (res.data.success) {
+      toast.success('上架成功');
+      newItemForm.value.name = '';
+      newItemForm.value.image = '';
+      imageFile.value = null;
+      fetchAdminItems();
+      fetchItems();
+    }
+  } catch(e) { toast.error('上架失敗'); }
+  finally { isAdminLoading.value = false; }
+};
+
+const toggleItemStock = async (item, diff) => {
+  const newQty = item.total_quantity + diff;
+  if (newQty < 0) return;
+  try {
+    const res = await axios.put(`https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/admin/items/${item.id}`, { total_quantity: newQty }, { headers: { Authorization: `Bearer ${token.value}` } });
+    if (res.data.success) {
+      toast.success('更新庫存成功');
+      fetchAdminItems();
+      fetchItems();
+    }
+  } catch(e) { toast.error('更新失敗'); }
+};
+
+const fetchChatLessors = async () => {
+  if (userRole.value === 'admin') {
+    const res = await axios.get('https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/admin/conversations', { headers: { Authorization: `Bearer ${token.value}` } });
+    if (res.data.success) chatLessors.value = res.data.conversations;
+  } else {
+    const res = await axios.get('https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/lessors', { headers: { Authorization: `Bearer ${token.value}` } });
+    if (res.data.success) chatLessors.value = res.data.lessors;
+  }
+};
+
+const selectLessor = async (lessorObj) => {
+  if (userRole.value === 'admin') {
+    currentChatLessor.value = lessorObj.lessor_name;
+    chatTargetUserId.value = lessorObj.user_id;
+  } else {
+    currentChatLessor.value = lessorObj.name;
+    chatTargetUserId.value = null;
+  }
+  const url = userRole.value === 'admin' ? `https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/messages/${currentChatLessor.value}?user_id=${chatTargetUserId.value}` : `https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/messages/${currentChatLessor.value}`;
+  const res = await axios.get(url, { headers: { Authorization: `Bearer ${token.value}` } });
+  if (res.data.success) chatMessages.value = res.data.messages;
+};
+
+const sendChatMessage = async () => {
+  if (!chatInput.value.trim() || !currentChatLessor.value) return;
+  try {
+    const payload = { lessor_name: currentChatLessor.value, content: chatInput.value, target_user_id: chatTargetUserId.value };
+    const res = await axios.post('https://tea-price-tracker-d1321322-drfqfwfscbeweydu.southeastasia-01.azurewebsites.net/api/messages', payload, { headers: { Authorization: `Bearer ${token.value}` } });
+    if (res.data.success) {
+      chatMessages.value.push(res.data.message);
+      chatInput.value = '';
+    }
+  } catch(e) { toast.error('發送失敗'); }
+};
+
+const toggleChatRoom = () => {
+  showChatRoom.value = !showChatRoom.value;
+  if (showChatRoom.value) fetchChatLessors();
+};
+
 onMounted(() => {
   fetchItems();
   if (token.value) {
     fetchMyRecords();
     fetchMe();
+    fetchNotifications();
+    if (localStorage.getItem('role') === 'admin') {
+      fetchAdminItems();
+    }
   }
 });
 </script>
@@ -421,7 +595,7 @@ onMounted(() => {
   <div class="app-layout">
     <Toast />
     <!-- 頂部導覽列 -->
-    <header class="app-header">
+    <header class="app-header" v-show="currentView !== 'auth'">
       <div class="header-container">
         <div class="header-logo" @click="token ? currentView = 'gallery' : null">
           <h1 class="app-title">校園物品借用系統</h1>
@@ -432,7 +606,36 @@ onMounted(() => {
         </div>
         
         <nav class="header-nav" v-if="token">
+          <!-- 鈴鐺通知 -->
           <button 
+            v-if="userRole !== 'admin'"
+            class="nav-tab icon-tab" 
+            :class="{ 'active': currentView === 'notifications' }"
+            @click="currentView = 'notifications'; markNotificationsRead();"
+          >
+            🔔
+            <span v-if="unreadCount > 0" class="badge">{{ unreadCount }}</span>
+          </button>
+          
+          <button 
+            v-if="userRole === 'admin'"
+            class="nav-tab" 
+            :class="{ 'active': currentView === 'admin' }"
+            @click="currentView = 'admin'; fetchAdminItems();"
+          >
+            ⚙️ 物品管理
+          </button>
+          
+          <button 
+            v-if="userRole !== 'admin'"
+            class="nav-tab" 
+            :class="{ 'active': currentView === 'dashboard' }"
+            @click="currentView = 'dashboard'"
+          >
+            📊 數據中心
+          </button>
+          <button 
+            v-if="userRole !== 'admin'"
             class="nav-tab" 
             :class="{ 'active': currentView === 'gallery' }"
             @click="currentView = 'gallery'"
@@ -440,6 +643,7 @@ onMounted(() => {
             🏪 物品大廳
           </button>
           <button 
+            v-if="userRole !== 'admin'"
             class="nav-tab" 
             :class="{ 'active': currentView === 'cabinet' }"
             @click="currentView = 'cabinet'; fetchMyRecords();"
@@ -447,6 +651,7 @@ onMounted(() => {
             📦 我的租借箱
           </button>
           <button 
+            v-if="userRole !== 'admin'"
             class="nav-tab" 
             :class="{ 'active': currentView === 'rules' }"
             @click="currentView = 'rules'"
@@ -459,54 +664,108 @@ onMounted(() => {
     </header>
 
     <!-- 主頁面渲染 -->
-    <main class="app-main">
+    <main :class="currentView === 'auth' ? 'auth-main-full' : 'app-main'">
       <Transition name="page" mode="out-in">
       <!-- ==================== View 1: 登入註冊頁面 ==================== -->
-      <section v-if="currentView === 'auth'" class="auth-view" key="auth">
-        <div class="auth-card">
-          <div class="auth-tabs">
-            <button 
-              class="auth-tab" 
-              :class="{ 'active': authMode === 'login' }"
-              @click="authMode = 'login'"
-            >
-              學生登入
-            </button>
-            <button 
-              class="auth-tab" 
-              :class="{ 'active': authMode === 'register' }"
-              @click="authMode = 'register'"
-            >
-              帳號註冊
-            </button>
+      <section v-if="currentView === 'auth'" class="auth-view split-auth-layout" key="auth">
+        <!-- 左側：品牌資訊與登入表單 -->
+        <div class="auth-left">
+          <div class="auth-left-content">
+            <h1 class="brand-title">Campus<br>Borrow.</h1>
+            <p class="brand-slogan">為什麼選擇 Campus Borrow？<br>我們提供極致美學的校園資源租借體驗，讓借用與歸還都成為一種享受。</p>
+            
+            <div class="auth-card-minimal">
+              <div class="auth-tabs minimal-tabs">
+                <button 
+                  class="auth-tab" 
+                  :class="{ 'active': authMode === 'login' }"
+                  @click="authMode = 'login'"
+                >
+                  學生登入
+                </button>
+                <button 
+                  class="auth-tab" 
+                  :class="{ 'active': authMode === 'admin' }"
+                  @click="authMode = 'admin'"
+                >
+                  管理員登入
+                </button>
+                <button 
+                  class="auth-tab" 
+                  :class="{ 'active': authMode === 'register' }"
+                  @click="authMode = 'register'"
+                >
+                  帳號註冊
+                </button>
+              </div>
+              
+              <form @submit.prevent="handleAuth" class="auth-form minimal-form">
+                <div class="input-field minimal-input">
+                  <label>學號 / 帳號</label>
+                  <input 
+                    v-model="authForm.username" 
+                    type="text" 
+                    placeholder="D1321322" 
+                    required 
+                  />
+                </div>
+                
+                <div class="input-field minimal-input">
+                  <label>登入密碼</label>
+                  <input 
+                    v-model="authForm.password" 
+                    type="password" 
+                    placeholder="Password" 
+                    required 
+                  />
+                </div>
+                
+                <div class="input-field minimal-input" v-if="authMode === 'register'" style="display: flex; align-items: center; gap: 8px; margin-top: -8px;">
+                  <input type="checkbox" id="reg-admin" v-model="authForm.isAdmin" />
+                  <label for="reg-admin" style="margin-bottom: 0; cursor: pointer;">註冊為管理員</label>
+                </div>
+                
+                <button type="submit" class="btn-auth-submit minimal-btn" :disabled="isAuthLoading">
+                  <span v-if="isAuthLoading" class="spinner-inline"></span>
+                  <span v-else>{{ authMode === 'register' ? '註冊新帳號' : (authMode === 'admin' ? '管理員登入' : '學生登入') }} ➔</span>
+                </button>
+              </form>
+            </div>
           </div>
-          
-          <form @submit.prevent="handleAuth" class="auth-form">
-            <div class="input-field">
-              <label>學號 / 帳號</label>
-              <input 
-                v-model="authForm.username" 
-                type="text" 
-                placeholder="請輸入學號，例如: S11002001" 
-                required 
-              />
+        </div>
+
+        <!-- 右側：質感物品網格展示 -->
+        <div class="auth-right">
+          <div class="showcase-grid">
+            <div class="showcase-card">
+              <div class="img-wrapper"><img src="https://images.unsplash.com/photo-1516035069371-29a1b244cc32?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80" alt="Camera" /></div>
+              <div class="showcase-info">
+                <h4>高階單眼</h4>
+                <p>專業攝影器材</p>
+              </div>
             </div>
-            
-            <div class="input-field">
-              <label>登入密碼</label>
-              <input 
-                v-model="authForm.password" 
-                type="password" 
-                placeholder="請輸入密碼" 
-                required 
-              />
+            <div class="showcase-card">
+              <div class="img-wrapper"><img src="https://images.unsplash.com/photo-1507582020474-9a35b7d455d9?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80" alt="Drone" /></div>
+              <div class="showcase-info">
+                <h4>空拍機</h4>
+                <p>高空視野記錄</p>
+              </div>
             </div>
-            
-            <button type="submit" class="btn-auth-submit" :disabled="isAuthLoading">
-              <span v-if="isAuthLoading" class="spinner-inline"></span>
-              <span v-else>{{ authMode === 'login' ? '立即登入' : '註冊新帳號' }}</span>
-            </button>
-          </form>
+            <div class="showcase-card">
+              <div class="img-wrapper"><img src="https://images.unsplash.com/photo-1590602847861-f357a9332bbc?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80" alt="Microphone" /></div>
+              <div class="showcase-info">
+                <h4>電容麥克風</h4>
+                <p>純淨收音體驗</p>
+              </div>
+            </div>
+            <div class="showcase-card">
+              <div class="img-wrapper"><img src="https://images.unsplash.com/photo-1626218174358-7769486c4b79?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80" alt="Tablet" /></div>
+              <div class="showcase-info">
+                <h4>平板電腦</h4>
+                <p>活動簽到必備</p>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -632,6 +891,87 @@ onMounted(() => {
               </div>
             </div>
           </aside>
+        </div>
+      </div>
+
+      <!-- ==================== View: 通知中心頁面 ==================== -->
+      <div v-else-if="currentView === 'notifications'" class="notifications-view" key="notifications">
+        
+        <div class="notifications-container">
+          <div v-if="notifications.length === 0" class="empty-state">
+             <p>目前沒有任何通知</p>
+          </div>
+          <div v-else class="notif-page-list">
+            <div v-for="n in notifications" :key="n.id" class="notif-page-item" :class="{ unread: !n.read }">
+              <div class="notif-icon-wrapper">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C19A6B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                </svg>
+              </div>
+              <div class="notif-content">
+                <h4>{{ n.title }}</h4>
+                <p>{{ n.message }}</p>
+                <span class="notif-time">{{ n.time }}</span>
+                <br>
+                <button class="notif-action-btn" v-if="n.title === '候補通知'" @click="currentView = 'gallery'">前往大廳</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== View: 數據儀表板頁面 ==================== -->
+      <div v-else-if="currentView === 'dashboard'" class="dashboard-view" key="dashboard">
+        
+        <div class="dashboard-grid">
+          
+          <div class="dashboard-card score-card">
+            <h3>信用積分</h3>
+            <div class="score-display">
+              <div class="score-circle">
+                <span class="score-value">{{ userScore }}</span>
+                <span class="score-label">/ 100</span>
+              </div>
+            </div>
+            <p class="score-desc" v-if="userScore >= 100">完美的借用紀錄，繼續保持！</p>
+            <p class="score-desc" v-else-if="userScore >= 80">信用良好，請記得準時歸還物品。</p>
+            <p class="score-desc text-danger" v-else>您的積分過低，已暫停借用權限。</p>
+          </div>
+
+          <div class="dashboard-card chart-card">
+            <h3>近期借用分類偏好</h3>
+            <div class="chart-container" v-if="myRecords.length > 0">
+              <div class="css-pie-chart" :style="`background: conic-gradient(
+                #171717 0% ${categoryStats.photo}%, 
+                #C19A6B ${categoryStats.photo}% ${categoryStats.photo + categoryStats.music}%, 
+                #A09486 ${categoryStats.photo + categoryStats.music}% 100%
+              )`"></div>
+              <div class="chart-legend">
+                <div class="legend-item"><span class="color-box" style="background: #171717;"></span>攝影器材</div>
+                <div class="legend-item"><span class="color-box" style="background: #C19A6B;"></span>樂器</div>
+                <div class="legend-item"><span class="color-box" style="background: #A09486;"></span>活動器材</div>
+              </div>
+            </div>
+            <div v-else class="empty-chart">
+              尚未有借用紀錄
+            </div>
+          </div>
+          
+          <div class="dashboard-card stats-card">
+            <h3>總計摘要</h3>
+            <div class="stats-row">
+              <div class="stat-box">
+                <span class="stat-num">{{ myRecords.length }}</span>
+                <span class="stat-label">歷史總借用次數</span>
+              </div>
+              <div class="stat-box">
+                <span class="stat-num">{{ myRecords.filter(r => r.status === 'active').length }}</span>
+                <span class="stat-label">目前持有物品</span>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -795,7 +1135,53 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- ==================== View 4: 規則與積分說明 ==================== -->
+      <!-- ==================== View: 管理員後台 ==================== -->
+      <div v-else-if="currentView === 'admin'" class="admin-view" key="admin">
+        <h2 style="font-size: 2rem; font-weight: 800; color: #171717; margin-bottom: 32px; -webkit-text-fill-color: initial;">⚙️ 物品管理與補貨</h2>
+        <div class="admin-grid">
+          <!-- 上架表單 -->
+          <div class="admin-card upload-card">
+            <h3>📦 新增物品上架</h3>
+            <form @submit.prevent="submitNewItem" class="admin-form">
+              <div class="input-field"><label>物品名稱</label><input v-model="newItemForm.name" required></div>
+              <div class="input-field"><label>分類</label><select v-model="newItemForm.category"><option>攝影器材</option><option>活動器材</option><option>樂器</option></select></div>
+              <div class="input-field"><label>上傳圖片 (檔案或網址)</label>
+  <div style="display: flex; gap: 8px;">
+    <input type="file" @change="handleImageUpload" accept="image/*" style="flex:1;">
+    <input v-model="newItemForm.image" placeholder="或輸入圖片網址" style="flex:1;">
+  </div>
+</div>
+              <div class="input-field"><label>規格說明</label><textarea v-model="newItemForm.description"></textarea></div>
+              <div class="input-row">
+                <div class="input-field"><label>押金</label><input type="number" v-model="newItemForm.deposit" min="0"></div>
+                <div class="input-field"><label>初始數量</label><input type="number" v-model="newItemForm.total_quantity" min="1"></div>
+              </div>
+              <div class="input-field"><label>歸還地點 (出租方)</label><input v-model="newItemForm.return_location" required></div>
+              <button type="submit" class="btn-primary" style="width: 100%; margin-top: 12px; border:none; background:#171717; color:#fff; padding:12px; border-radius:8px;">確認上架物品</button>
+            </form>
+          </div>
+          <!-- 物品清單 (下架/補貨) -->
+          <div class="admin-card inventory-card">
+            <h3>📋 庫存管理</h3>
+            <div class="inventory-list">
+              <div v-for="item in adminItems" :key="item.id" class="inventory-item">
+                <img :src="item.image" class="inv-img">
+                <div class="inv-info">
+                  <h4>{{ item.name }}</h4>
+                  <p>庫存: {{ item.total_quantity - item.borrowed_quantity }} / {{ item.total_quantity }}</p>
+                  <span class="inv-status" :class="item.status === 'available' ? 'status-ok' : 'status-bad'">{{ item.status === 'available' ? '可借用' : '已下架/無庫存' }}</span>
+                </div>
+                <div class="inv-actions">
+                  <button class="btn-stock" @click="toggleItemStock(item, 1)" title="補貨 1 個">+1</button>
+                  <button class="btn-stock" @click="toggleItemStock(item, -1)" title="下架 1 個" :disabled="item.total_quantity <= item.borrowed_quantity">-1</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== View: 規則與積分說明 ==================== -->
       <div v-else-if="currentView === 'rules'" class="rules-view" key="rules">
         <h2 class="rules-main-title">📜 規則與積分說明</h2>
         
@@ -852,6 +1238,45 @@ onMounted(() => {
       />
 
     </main>
+
+    <!-- 聯絡室懸浮按鈕與面板 -->
+    <div class="chat-widget" v-if="token && currentView !== 'auth'">
+      <button class="chat-fab" @click="toggleChatRoom">💬<br><span style="font-size:0.6rem;">聯絡室</span></button>
+      <transition name="fade-slide">
+        <div class="chat-panel" v-if="showChatRoom">
+          <div class="chat-header">
+            <h3>💬 聯絡室 {{ userRole === 'admin' ? '(管理員模式)' : '' }}</h3>
+            <button class="btn-close" @click="showChatRoom = false">×</button>
+          </div>
+          <div class="chat-body">
+            <div class="chat-sidebar">
+              <div class="chat-sidebar-title">對象</div>
+              <div v-for="l in chatLessors" :key="l.name || (l.user_id + l.lessor_name)" 
+                   class="lessor-item" 
+                   :class="{'active': (userRole === 'admin' ? (currentChatLessor === l.lessor_name && chatTargetUserId === l.user_id) : currentChatLessor === l.name)}"
+                   @click="selectLessor(l)">
+                <div class="lessor-avatar">{{ (l.name || l.lessor_name).charAt(0) }}</div>
+                <div class="lessor-name">{{ userRole === 'admin' ? `${l.lessor_name} (${l.username})` : l.name }}</div>
+              </div>
+            </div>
+            <div class="chat-content">
+              <div class="chat-messages" v-if="currentChatLessor" ref="messagesContainer">
+                <div v-for="m in chatMessages" :key="m.id" class="message-bubble" :class="(userRole === 'admin' && m.sender === 'lessor') || (userRole !== 'admin' && m.sender === 'student') ? 'sent' : 'received'">
+                  <div class="msg-text">{{ m.content }}</div>
+                  <div class="msg-time">{{ m.created_at.split(' ')[1] }}</div>
+                </div>
+                <div v-if="chatMessages.length === 0" class="chat-empty">尚未有對話記錄，開始打招呼吧！</div>
+              </div>
+              <div class="chat-placeholder" v-else>請選擇左側對象以開始對話</div>
+              <div class="chat-input-area" v-if="currentChatLessor">
+                <input v-model="chatInput" @keyup.enter="sendChatMessage" placeholder="輸入訊息..." />
+                <button @click="sendChatMessage" class="btn-send-msg">傳送</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </transition>
+    </div>
   </div>
 </template>
 
@@ -1019,14 +1444,14 @@ body {
 }
 
 .app-header {
-  background-color: rgba(255, 255, 255, 0.65);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.8);
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.03);
+  background-color: rgba(255, 255, 255, 0.95);
+  border-bottom: 1px solid #EAEAEA;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.02);
   position: sticky;
   top: 0;
   z-index: 100;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .header-container {
@@ -1049,15 +1474,14 @@ body {
   margin: 0;
   font-size: 1.4rem;
   font-weight: 800;
-  background: linear-gradient(135deg, #00d2ff 0%, #00cc7e 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #171717;
+  letter-spacing: -0.5px;
 }
 
 .user-badge {
   font-size: 0.8rem;
-  background-color: rgba(0, 204, 126, 0.08);
-  color: #00cc7e;
+  background-color: #F4EBE1;
+  color: #171717;
   padding: 6px 12px;
   border-radius: 20px;
   font-weight: 600;
@@ -1087,7 +1511,7 @@ body {
 }
 
 .nav-tab.active {
-  background-color: #0f172a;
+  background-color: #171717;
   color: #ffffff;
 }
 
@@ -1119,108 +1543,221 @@ body {
   flex-grow: 1;
 }
 
-/* ==================== 登入/註冊卡片樣式 (磨砂玻璃玻璃質感) ==================== */
-.auth-view {
+/* ==================== 登入/註冊卡片樣式 (左右分割質感設計) ==================== */
+.split-auth-layout {
   display: flex;
-  justify-content: center;
+  min-height: 100vh;
+  background-color: #F4EBE1;
+  width: 100vw;
+  margin: 0;
+  padding: 0;
+}
+
+.auth-main-full {
+  padding: 0 !important;
+  margin: 0 !important;
+  max-width: 100% !important;
+  width: 100vw;
+}
+
+.auth-left {
+  flex: 1;
+  display: flex;
   align-items: center;
-  min-height: 70vh;
+  justify-content: center;
+  padding: 40px;
+  background-color: #F4EBE1;
 }
 
-.auth-card {
+.auth-left-content {
+  max-width: 440px;
   width: 100%;
-  max-width: 400px;
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  border-radius: 24px;
-  padding: 32px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.04);
-  backdrop-filter: blur(16px);
 }
 
-.auth-tabs {
+.brand-title {
+  font-size: 3.5rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: #171717;
+  margin-bottom: 20px;
+  letter-spacing: -1px;
+}
+
+.brand-slogan {
+  font-size: 1.05rem;
+  color: #5A524A;
+  margin-bottom: 40px;
+  line-height: 1.6;
+}
+
+.auth-card-minimal {
+  background: transparent;
+}
+
+.minimal-tabs {
   display: flex;
-  background-color: #f1f5f9;
-  padding: 6px;
-  border-radius: 14px;
+  gap: 16px;
   margin-bottom: 30px;
 }
 
-.auth-tab {
-  flex: 1;
+.minimal-tabs .auth-tab {
+  flex: none;
+  background: transparent;
   border: none;
-  background: none;
-  font-size: 0.95rem;
-  font-weight: 600;
-  padding: 10px;
-  border-radius: 10px;
-  cursor: pointer;
-  color: #64748b;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #A09486;
+  padding: 0 0 8px 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   transition: all 0.3s;
 }
 
-.auth-tab.active {
-  background-color: #ffffff;
-  color: #1e293b;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+.minimal-tabs .auth-tab:hover {
+  color: #171717;
+  background: transparent;
 }
 
-.auth-form {
+.minimal-tabs .auth-tab.active {
+  color: #171717;
+  border-bottom-color: #171717;
+  box-shadow: none;
+}
+
+.minimal-form {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
 }
 
-.input-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  text-align: left;
-}
-
-.input-field label {
+.minimal-input label {
   font-size: 0.85rem;
-  font-weight: 600;
-  color: #475569;
+  color: #171717;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
 }
 
-.input-field input {
+.minimal-input input {
   width: 100%;
-  padding: 14px;
-  border: 1px solid #cbd5e1;
-  border-radius: 12px;
-  font-size: 0.95rem;
-  color: #0f172a;
-  background-color: #f8fafc;
-  box-sizing: border-box;
+  padding: 16px 0;
+  border: none;
+  border-bottom: 1px solid #D6CEC4;
+  background: transparent;
+  font-size: 1.1rem;
+  color: #171717;
+  border-radius: 0;
   transition: all 0.3s;
 }
 
-.input-field input:focus {
+.minimal-input input:focus {
   outline: none;
-  border-color: #00cc7e;
-  background-color: #ffffff;
-  box-shadow: 0 0 0 3px rgba(0, 204, 126, 0.1);
+  border-bottom-color: #171717;
+  box-shadow: none;
 }
 
-.btn-auth-submit {
-  width: 100%;
-  border: none;
-  background: linear-gradient(135deg, #0f172a 0%, #334155 100%);
-  color: #ffffff;
-  padding: 14px;
-  border-radius: 14px;
-  font-weight: 600;
+.minimal-input input::placeholder {
+  color: #A09486;
+}
+
+.minimal-btn {
+  margin-top: 10px;
+  background: #171717;
+  color: #FFFFFF;
+  padding: 18px 24px;
   font-size: 1rem;
-  letter-spacing: 0.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  border: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-radius: 0;
   cursor: pointer;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.3s, background 0.3s;
 }
 
-.btn-auth-submit:hover {
+.minimal-btn:hover {
+  background: #333333;
   transform: translateY(-2px);
-  box-shadow: 0 12px 25px rgba(15, 23, 42, 0.2);
+  box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+}
+
+.auth-right {
+  flex: 1.2;
+  background-color: #FFFFFF;
+  padding: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.showcase-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 24px;
+  width: 100%;
+  max-width: 600px;
+}
+
+.showcase-card {
+  background: #F9F9F9;
+  border-radius: 16px;
+  overflow: hidden;
+  transition: transform 0.3s;
+  cursor: pointer;
+}
+
+.showcase-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+}
+
+.showcase-card .img-wrapper {
+  width: 100%;
+  padding-top: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.showcase-card img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.5s;
+}
+
+.showcase-card:hover img {
+  transform: scale(1.05);
+}
+
+.showcase-info {
+  padding: 16px;
+  text-align: center;
+}
+
+.showcase-info h4 {
+  margin: 0 0 4px 0;
+  font-size: 1rem;
+  color: #171717;
+}
+
+.showcase-info p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #A09486;
+}
+
+@media (max-width: 992px) {
+  .split-auth-layout {
+    flex-direction: column;
+  }
+  .auth-right {
+    padding: 40px 20px;
+  }
 }
 
 /* ==================== 租借大廳樣式 ==================== */
@@ -1242,7 +1779,7 @@ body {
   border: 1px solid #cbd5e1;
   border-radius: 12px;
   font-size: 0.95rem;
-  color: #0f172a;
+  color: #171717;
   box-sizing: border-box;
   background-color: #f8fafc;
   transition: all 0.3s;
@@ -1250,9 +1787,9 @@ body {
 
 .search-input:focus {
   outline: none;
-  border-color: #00d2ff;
+  border-color: #171717;
   background-color: #ffffff;
-  box-shadow: 0 0 0 3px rgba(0, 210, 255, 0.15);
+  box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.1);
 }
 
 .category-tabs {
@@ -1275,14 +1812,14 @@ body {
 
 .cat-tab:hover {
   background-color: #e2e8f0;
-  color: #0f172a;
+  color: #171717;
 }
 
 .cat-tab.active {
-  background: linear-gradient(135deg, #00d2ff 0%, #00cc7e 100%);
+  background: #171717;
   color: #ffffff;
-  border: none;
-  box-shadow: 0 4px 10px rgba(0, 204, 126, 0.15);
+  border: 1px solid #171717;
+  box-shadow: 0 4px 10px rgba(23, 23, 23, 0.15);
 }
 
 .split-container {
@@ -1448,7 +1985,7 @@ body {
   border: 1px solid #cbd5e1;
   border-radius: 10px;
   font-size: 0.9rem;
-  color: #0f172a;
+  color: #171717;
   background-color: #f8fafc;
   box-sizing: border-box;
   transition: all 0.3s;
@@ -1456,15 +1993,15 @@ body {
 
 .input-borrower:focus {
   outline: none;
-  border-color: #00cc7e;
+  border-color: #171717;
   background-color: #ffffff;
-  box-shadow: 0 0 0 3px rgba(0, 204, 126, 0.1);
+  box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.1);
 }
 
 .btn-submit {
   width: 100%;
   border: none;
-  background: #0f172a;
+  background: #171717;
   color: #ffffff;
   padding: 14px;
   border-radius: 12px;
@@ -1476,7 +2013,7 @@ body {
 }
 
 .btn-submit:hover {
-  background-color: #1e293b;
+  background-color: #333333;
   transform: translateY(-1px);
 }
 
@@ -1555,18 +2092,18 @@ body {
 }
 
 .record-status-tag.pending {
-  color: #f59e0b;
-  background-color: rgba(245, 158, 11, 0.08);
+  color: #C19A6B;
+  background-color: rgba(193, 154, 107, 0.1);
 }
 
 .record-status-tag.active {
-  color: #3b82f6;
-  background-color: rgba(59, 130, 246, 0.08);
+  color: #171717;
+  background-color: rgba(23, 23, 23, 0.08);
 }
 
 .record-status-tag.returned {
-  color: #10b981;
-  background-color: rgba(16, 185, 129, 0.08);
+  color: #A09486;
+  background-color: rgba(160, 148, 134, 0.15);
 }
 
 .record-title {
@@ -1618,13 +2155,11 @@ body {
 }
 
 .calendar-box {
-  background-color: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  background-color: #ffffff;
+  border: 1px solid #EAEAEA;
   border-radius: 20px;
   padding: 24px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.04);
   transition: all 0.3s ease;
 }
 
@@ -1660,7 +2195,7 @@ body {
   margin: 0;
   font-size: 1.1rem;
   font-weight: 700;
-  color: #0f172a;
+  color: #171717;
 }
 
 /* 日曆網格 */
@@ -1822,7 +2357,7 @@ body {
 
 /* ==================== 升級計畫：數量控制與字體顏色調整 ==================== */
 .section-title {
-  color: #0f172a;
+  color: #171717;
   font-weight: 800;
 }
 .cart-empty {
@@ -1872,7 +2407,7 @@ body {
   font-weight: 600;
   width: 20px;
   text-align: center;
-  color: #0f172a;
+  color: #171717;
 }
 
 /* ==================== 規則與積分頁面 ==================== */
@@ -1881,13 +2416,12 @@ body {
 }
 .rules-main-title {
   font-size: 2rem;
-  color: #0f172a;
+  color: #171717;
   text-align: center;
   margin-bottom: 40px;
   font-weight: 800;
-  background: linear-gradient(135deg, #00d2ff 0%, #00cc7e 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #171717;
+  letter-spacing: -0.5px;
 }
 .rules-grid {
   display: grid;
@@ -1912,7 +2446,7 @@ body {
 }
 .rule-card h3 {
   font-size: 1.4rem;
-  color: #0f172a;
+  color: #171717;
   margin-bottom: 12px;
   font-weight: 700;
 }
@@ -1971,7 +2505,7 @@ body {
   margin: 0;
   font-size: 1.1rem;
   font-weight: 700;
-  color: #0f172a;
+  color: #171717;
 }
 
 .btn-close-card {
@@ -2225,4 +2759,302 @@ body {
   font-size: 0.7rem;
   font-weight: 700;
 }
+
+/* ==================== 通知中心 ==================== */
+.notification-wrapper {
+  position: relative;
+}
+.icon-tab {
+  position: relative;
+  font-size: 1.2rem;
+}
+.badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: #C19A6B;
+  color: #fff;
+  font-size: 0.6rem;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: bold;
+}
+.notification-dropdown {
+  position: absolute;
+  top: 120%;
+  right: 0;
+  width: 320px;
+  background: #fff;
+  border: 1px solid #EAEAEA;
+  border-radius: 16px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.08);
+  z-index: 200;
+  overflow: hidden;
+}
+.notif-header {
+  padding: 16px;
+  background: #FAFAFA;
+  border-bottom: 1px solid #EAEAEA;
+  font-weight: 700;
+  color: #171717;
+}
+.notif-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.notif-item {
+  padding: 16px;
+  border-bottom: 1px solid #EAEAEA;
+}
+.notif-item.unread {
+  background: rgba(193, 154, 107, 0.05);
+}
+.notif-item h4 { margin: 0 0 4px 0; font-size: 0.9rem; color: #171717; }
+.notif-item p { margin: 0 0 8px 0; font-size: 0.8rem; color: #5A524A; }
+.notif-time { font-size: 0.7rem; color: #A09486; }
+
+/* ==================== 數據儀表板 ==================== */
+.dashboard-view {
+  padding: 0 24px;
+}
+
+.view-title {
+  font-size: 2rem;
+  font-weight: 800;
+  color: #171717;
+  margin-bottom: 32px;
+  -webkit-text-fill-color: initial;
+  background: none;
+  text-align: left;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 24px;
+}
+.dashboard-card {
+  background: #fff;
+  border: 1px solid #EAEAEA;
+  border-radius: 20px;
+  padding: 32px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.02);
+}
+.dashboard-card h3 {
+  margin: 0 0 24px 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #171717;
+  -webkit-text-fill-color: initial;
+  background: none;
+}
+
+.score-display {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.score-circle {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  border: 8px solid #F4EBE1;
+  border-top-color: #C19A6B;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+.score-value { font-size: 2rem; font-weight: 800; color: #171717; }
+.score-label { font-size: 0.8rem; color: #A09486; }
+.score-desc { text-align: center; color: #5A524A; font-size: 0.9rem; }
+
+.chart-container {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+}
+.css-pie-chart {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+}
+.chart-legend { display: flex; flex-direction: column; gap: 8px; }
+.legend-item { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: #5A524A; }
+.color-box { width: 12px; height: 12px; border-radius: 3px; }
+.empty-chart { text-align: center; color: #A09486; padding: 40px 0; }
+
+.stats-row {
+  display: flex;
+  gap: 24px;
+}
+.stat-box {
+  flex: 1;
+  background: #FAFAFA;
+  padding: 20px;
+  border-radius: 12px;
+  text-align: center;
+}
+.stat-num { display: block; font-size: 2rem; font-weight: 800; color: #171717; margin-bottom: 4px; }
+.stat-label { font-size: 0.8rem; color: #A09486; }
+
+/* ==================== 微動畫 ==================== */
+.staggered-fade-enter-active,
+.staggered-fade-leave-active {
+  transition: all 0.5s ease;
+}
+.staggered-fade-enter-from {
+  opacity: 0;
+  transform: translateY(20px);
+}
+.staggered-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-20px);
+}
+.grid-item {
+  animation: fadeUp 0.6s ease forwards;
+  opacity: 0;
+}
+@keyframes fadeUp {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.empty-svg {
+  margin-bottom: 16px;
+  animation: float 4s ease-in-out infinite;
+}
+
+.notifications-view {
+  padding: 0 24px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+.notifications-container {
+  background: #fff;
+  border: 1px solid #EAEAEA;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.02);
+  overflow: hidden;
+}
+.notif-page-item {
+  display: flex;
+  gap: 20px;
+  padding: 24px 32px;
+  border-bottom: 1px solid #EAEAEA;
+  align-items: center;
+  text-align: left;
+  transition: background 0.3s;
+}
+.notif-page-item:hover {
+  background: #FAFAFA;
+}
+.notif-page-item:last-child {
+  border-bottom: none;
+}
+.notif-page-item.unread {
+  background: rgba(193, 154, 107, 0.05);
+}
+.notif-icon-wrapper {
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid #EAEAEA;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.02);
+}
+.notif-content {
+  flex: 1;
+}
+.notif-content h4 { 
+  margin: 0 0 6px 0; 
+  font-size: 1.15rem; 
+  color: #171717; 
+  font-weight: 700;
+  -webkit-text-fill-color: initial;
+}
+.notif-content p { 
+  margin: 0 0 8px 0; 
+  font-size: 0.95rem; 
+  color: #5A524A; 
+  line-height: 1.5;
+}
+.notif-time { 
+  font-size: 0.8rem; 
+  color: #A09486; 
+  font-weight: 500;
+}
+.notif-action-btn {
+  padding: 8px 16px;
+  background: #171717;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+.notif-action-btn:hover {
+  transform: translateY(-2px);
+}
+/* ==================== Admin View ==================== */
+.admin-view { padding: 0 24px; max-width: 1000px; margin: 0 auto; }
+.admin-grid { display: flex; gap: 24px; align-items: flex-start; }
+.admin-card { background: #fff; border: 1px solid #EAEAEA; border-radius: 20px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.02); flex: 1; }
+.admin-card h3 { margin: 0 0 20px 0; font-size: 1.1rem; color: #171717; }
+.admin-form .input-field { margin-bottom: 16px; }
+.admin-form label { display: block; font-size: 0.85rem; color: #5A524A; margin-bottom: 8px; font-weight: 600; }
+.admin-form input, .admin-form select, .admin-form textarea { width: 100%; padding: 10px; border: 1px solid #EAEAEA; border-radius: 8px; background: #FAFAFA; box-sizing: border-box; color: #171717; }
+.admin-form textarea { height: 80px; resize: vertical; }
+.input-row { display: flex; gap: 16px; }
+.input-row .input-field { flex: 1; }
+
+.inventory-list { display: flex; flex-direction: column; gap: 16px; max-height: 500px; overflow-y: auto; }
+.inventory-item { display: flex; gap: 16px; padding: 12px; border: 1px solid #EAEAEA; border-radius: 12px; align-items: center; }
+.inv-img { width: 60px; height: 60px; object-fit: cover; border-radius: 8px; }
+.inv-info { flex: 1; }
+.inv-info h4 { margin: 0 0 4px 0; font-size: 1rem; color: #171717; -webkit-text-fill-color: initial; }
+.inv-info p { margin: 0 0 4px 0; font-size: 0.8rem; color: #5A524A; }
+.inv-status { font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+.status-ok { background: rgba(16, 185, 129, 0.1); color: #10B981; }
+.status-bad { background: rgba(239, 68, 68, 0.1); color: #EF4444; }
+.inv-actions { display: flex; flex-direction: column; gap: 8px; }
+.btn-stock { background: #FAFAFA; border: 1px solid #EAEAEA; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-weight: 600; transition: 0.2s; }
+.btn-stock:hover:not(:disabled) { background: #EAEAEA; }
+.btn-stock:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ==================== Chat Room ==================== */
+.chat-widget { position: fixed; right: 30px; bottom: 30px; z-index: 1000; display: flex; flex-direction: column; align-items: flex-end; }
+.chat-fab { width: 64px; height: 64px; border-radius: 50%; background: #171717; color: #fff; border: none; box-shadow: 0 10px 25px rgba(0,0,0,0.2); cursor: pointer; font-size: 1.5rem; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.2; transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+.chat-fab:hover { transform: scale(1.1); }
+.chat-panel { position: absolute; bottom: 80px; right: 0; width: 400px; height: 500px; background: #fff; border-radius: 20px; box-shadow: 0 15px 40px rgba(0,0,0,0.15); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #EAEAEA; }
+.chat-header { background: #171717; color: #fff; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; }
+.chat-header h3 { margin: 0; font-size: 1.1rem; color: #fff; -webkit-text-fill-color: initial; }
+.btn-close { background: none; border: none; color: #fff; font-size: 1.5rem; cursor: pointer; }
+.chat-body { display: flex; flex: 1; height: calc(100% - 56px); }
+.chat-sidebar { width: 140px; background: #FAFAFA; border-right: 1px solid #EAEAEA; overflow-y: auto; }
+.chat-sidebar-title { font-size: 0.75rem; color: #A09486; font-weight: 700; padding: 12px; text-transform: uppercase; }
+.lessor-item { padding: 12px; display: flex; align-items: center; gap: 8px; cursor: pointer; transition: background 0.2s; border-bottom: 1px solid #EAEAEA; }
+.lessor-item:hover { background: #f0f0f0; }
+.lessor-item.active { background: #fff; border-left: 3px solid #C19A6B; }
+.lessor-avatar { width: 24px; height: 24px; background: #C19A6B; color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700; flex-shrink: 0; }
+.lessor-name { font-size: 0.85rem; color: #171717; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-content { flex: 1; display: flex; flex-direction: column; background: #fff; }
+.chat-messages { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.message-bubble { max-width: 80%; padding: 10px 14px; border-radius: 12px; position: relative; }
+.message-bubble.sent { align-self: flex-end; background: #171717; color: #fff; border-bottom-right-radius: 4px; }
+.message-bubble.received { align-self: flex-start; background: #F4EBE1; color: #171717; border-bottom-left-radius: 4px; }
+.msg-text { font-size: 0.9rem; line-height: 1.4; word-break: break-all; }
+.msg-time { font-size: 0.65rem; opacity: 0.7; margin-top: 4px; text-align: right; }
+.chat-empty { text-align: center; color: #A09486; font-size: 0.85rem; margin-top: 40px; }
+.chat-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: #A09486; font-size: 0.9rem; }
+.chat-input-area { padding: 12px; border-top: 1px solid #EAEAEA; display: flex; gap: 8px; background: #fff; }
+.chat-input-area input { flex: 1; padding: 8px 12px; border: 1px solid #EAEAEA; border-radius: 20px; outline: none; font-size: 0.9rem; }
+.chat-input-area input:focus { border-color: #C19A6B; }
+.btn-send-msg { background: #C19A6B; color: #fff; border: none; padding: 8px 16px; border-radius: 20px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+.btn-send-msg:hover { background: #b0895a; }
+
 </style>
