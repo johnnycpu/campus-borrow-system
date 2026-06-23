@@ -23,6 +23,13 @@ jobs:
         with:
           node-version: '22.x'
 
+      - name: npm install, build, and test
+        run: |
+          npm config set sqlite3_binary_host_mirror https://npmmirror.com/mirrors/sqlite3/
+          npm install --platform=linux --arch=x64
+          npm run build --if-present
+        working-directory: ./server
+
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
         with:
