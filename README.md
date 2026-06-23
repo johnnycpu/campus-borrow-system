@@ -397,18 +397,18 @@ graph TD
 
 ## 9. 開源專案借鑑與技術參考 (Open-source Reference)
 
-為了使本專案的架構更具備擴充性與業界生產標準，我們參考了 GitHub 上優秀的開源資產與設備租借管理系統 **[vue-ams (Asset Management System)](https://github.com/EryouHao/vue-ams)** 的架構設計。
+為了使本專案的架構更具備擴充性與業界生產標準，我們參考了 GitHub 上優秀的校園物品與圖書流通管理系統 **[Sanskar97x/secondhand-book](https://github.com/Sanskar97x/secondhand-book)** 的架構設計。
 
-本專案與該開源租借系統在 **JavaScript / HTML / CSS / Vue / Express.js** 相關技術的實作上有多處契合，並從中借鑑了關鍵的系統設計：
+本專案與該開源二手書管理系統在 **JavaScript / HTML / CSS / Vue / Express.js** 相關技術的實作上有多處契合，並從中借鑑了關鍵的系統設計：
 
-### 🔑 1. JavaScript & Express.js：無狀態 JWT 角色權限與租借邏輯
-*   **參考借鑑**：`vue-ams` 作為一個前後端分離的資產管理系統，後端採用 Express.js 處理設備借用（Check-out）、設備歸還（Check-in）以及狀態流轉（如 available 變更為 borrowed）。我們借鑑了其 **無狀態身分驗證 (Stateless Auth)** 的安全實作，在 `server/server.js` 中實現了基於 JWT 的角色攔截中介軟體 (`authenticateToken`)，確保只有 `admin` 管理員角色能訪問 `/api/admin/*` 的敏感物品上架與庫存補貨介面。
-*   **技術延展**：我們進一步將此租借邏輯擴充，結合了 **智慧候補隊列 (Waitlist Queue)**，當管理員在後台將物品庫存補貨（+1）時，後端會自動發送通知（Notification）給排隊候補的學生，實現了全自動化的資源調配。
+### 🔑 1. JavaScript & Express.js：RESTful API 狀態流轉與租借業務邏輯
+*   **參考借鑑**：`Sanskar97x/secondhand-book` 作為一個前後端分離的校園二手物品與圖書流通系統，後端採用 Express.js 處理物品/書籍的 CRUD 路由、分類篩選，以及借閱/交易狀態的變更（如 available 變更為 borrowed/sold）。我們借鑑了其簡潔的 RESTful API 路由設計與資料庫狀態變更模式，在 `server/server.js` 中實現了基於 SQLite3 的物品狀態（可用、已借出）即時更新 API。
+*   **技術延展**：我們進一步擴充了此借閱邏輯。除了解析使用者身分之外，我們結合了 **智慧候補隊列 (Waitlist Queue)** 路由。當管理員在後台將熱門物品庫存補貨（+1）時，後端會自動在 SQLite 中觸發事務更新，並發送系統通知（Notification）給排隊候補的學生，解決了原始專案在多人爭搶單一資源時可能產生的 race condition 問題。
 
 ### 📦 2. Vue (Composition API)：單一資料源與租借購物車狀態
-*   **參考借鑑**：在前端狀態管理中，`vue-ams` 示範了如何使用 Vue 作為資產狀態追蹤的介面，將資產分類與租用清單進行響應式綁定。我們借鑑了其 **單一資料源 (SSOT, Single Source of Truth)** 的設計模式，將核心物品列表狀態 `items`、個人租借箱 `myRecords` 與待借用的購物車 `cart` 提升並維護於 `App.vue` 大腦中。
-*   **技術延展**：我們使用 Vue 3 的 Composition API 重新重構了元件通訊。`ItemCard.vue` 專注於接收 `Props` 渲染物品資訊，並利用 `Emits`（如 `add-to-cart`、`join-waitlist`）向上傳遞事件，使大廳物品網格的資料流過濾與按鈕禁用邏輯（例如無庫存時自動禁借並轉為排隊）變得極致靈敏。
+*   **參考借鑑**：在前端狀態管理中，`Sanskar97x/secondhand-book` 展示了如何利用 Vue 處理書籍目錄的響應式檢索、分類篩選以及「借閱購物車（Cart）」的狀態變更。我們借鑑了其 **單一資料源 (SSOT, Single Source of Truth)** 的設計思維，將核心物品列表狀態 `items`、個人租借箱 `myRecords` 與待借用的購物車 `cart` 統一提升並維護於 `App.vue` 大腦中。
+*   **技術延展**：我們將原專案較為傳統的程式架構，全面以 **Vue 3 Composition API** 進行重構。利用 Vue 3 的 `ref`、`computed` 與響應式元件通訊機制，`ItemCard.vue` 僅透過 `Props` 接收數據並渲染，而借用、加入排隊等行為則透過 `Emits`（如 `add-to-cart`、`join-waitlist`）向上傳遞給 `App.vue`。這使得大廳物品網格的篩選過濾、即時庫存變動與按鈕禁用邏輯（如無庫存時自動禁借並轉為排隊）變得極致靈敏且易於維護。
 
 ### 🎨 3. HTML & CSS：語意化 RWD 佈局與現代化毛玻璃質感
-*   **參考借鑑**：`vue-ams` 在 HTML5 結構與 CSS layout 布局上，展示了如何使用彈性盒子 (Flexbox) 與網格 (CSS Grid) 實現精確的租借控制面板與響應式網頁設計 (RWD)。我們借鑑了其 HTML5 語意化網格分層，確保物品卡片大廳、側邊欄購物車與通知中心在不同螢幕尺寸下皆能優雅對齊。
-*   **技術延展**：該專案主要使用傳統的 Bootstrap / Element-UI 的制式 UI，我們在此基礎上大膽進行了美學升級。全站捨棄了框架，改以手寫 Vanilla CSS 實作了「流動玻璃 (Liquid Glass)」質感，利用 `backdrop-filter: blur(16px)` 與柔和的擴散陰影，並重新設計了「左右分割質感登入版面 (Split Auth Layout)」，使得系統不僅實用，更具備高奢的現代化 SaaS 質感。
+*   **參考借鑑**：`Sanskar97x/secondhand-book` 在 HTML5 結構與 CSS layout 布局上，展示了如何使用彈性盒子 (Flexbox) 與網格 (CSS Grid) 實現多欄式的圖書展示網格與響應式導覽列。我們借鑑了其 RWD 響應式佈局結構，確保物品卡片大廳、側邊欄購物車與通知中心在不同螢幕尺寸下皆能優雅對齊。
+*   **技術延展**：該開源專案主要使用制式且傳統的 CSS / UI 框架，視覺風格較為單調。我們在此基礎上大膽進行了美學升級，全站捨棄了制式框架，改以手寫 Vanilla CSS 實作了「流動玻璃 (Liquid Glass)」質感，利用 `backdrop-filter: blur(16px)` 與柔和的擴散陰影，並重新設計了「左右非對稱質感登入版面 (Split Auth Layout)」，使得系統不僅功能齊全，更具備高奢的現代化 SaaS 質感與流暢的微交互過渡動畫。
