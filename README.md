@@ -16,6 +16,7 @@
 6. [版面設計與 UI/UX 質感升級 (UI/UX Upgrades)](#6-版面設計與-uiux-質感升級-uiux-upgrades)
 7. [使用者完整流程與體驗考量 (User Journey)](#7-使用者完整流程與體驗-user-journey)
 8. [前後端分離部署方案與實務解決方案 (Deployment & Troubleshoot)](#8-前後端分離部署方案與實務解決方案-deployment--troubleshoot)
+9. [開源專案借鑑與技術參考 (Open-source Reference)](#9-開源專案借鑑與技術參考-open-source-reference)
 
 ---
 
@@ -391,3 +392,23 @@ graph TD
 #### 3. GitHub Pages 開啟後只顯示 `README.md` 說明文件
 *   **問題描述**：前端部署至 Pages 後，一打開網址顯示的竟是此 README 文件的 HTML，而非我們設計的物品借用網頁。
 *   **解決方法**：這是因為 GitHub 專案預設的 Pages 來源設定為「從分支 (Deploy from a branch)」讀取根目錄。由於專案根目錄沒有 `index.html`，Pages 才會去讀取並渲染 `README.md`。必須手動前往 GitHub 倉庫頁面的 **Settings -> Pages -> Build and deployment -> Source** 下拉選單，將其改選為 **GitHub Actions**，如此一來 Pages 才會正確去抓取 Actions 打包好並上傳的前端 `./client/dist` 靜態網頁檔案。
+
+---
+
+## 9. 開源專案借鑑與技術參考 (Open-source Reference)
+
+為了使本專案的架構更具備擴充性與業界生產標準，我們參考了 GitHub 上優秀的開源圖書與資源管理系統 **[Library-Management-System (MEVN Stack)](https://github.com/sagarsanjaysutar/Library-Management-System)** 的架構設計。
+
+本專案與該開源專案在 **JavaScript / HTML / CSS / Vue / Express.js** 相關技術的實作上有多處契合，並從中借鑑了關鍵的系統設計：
+
+### 🔑 1. JavaScript & Express.js：無狀態 JWT 角色權限設計
+*   **參考借鑑**：該開源專案採用 Express.js 處理學生 (Student) 與員工 (Employee) 的多重身分驗證。我們借鑑了其 **無狀態身分驗證 (Stateless Auth)** 的安全實作，在 `server/server.js` 中實現了 JWT 的角色攔截中介軟體 (`authenticateToken`)。這確保了 `/api/admin/*` 的敏感管理介面（如上架、補貨）只允許含有 `admin` 角色的 token 訪問。
+*   **技術延展**：我們進一步擴充了此設計，將原本存放在本地記憶體的 token 快取，無縫整合了前端的 `localStorage` 持久化，並在 Axios 的攔截器中統一配置 `Authorization: Bearer <TOKEN>` 標頭。
+
+### 📦 2. Vue (Composition API)：單一資料源與元件通訊
+*   **參考借鑑**：該專案前端使用 Vue 作為狀態管理框架，將借閱箱紀錄、個人積分與通知系統組件化。我們借鑑了其 **單一資料源 (SSOT, Single Source of Truth)** 的設計模式，將核心物品列表狀態 `items` 與購物車 `cart` 提升並維護於 `App.vue` 大腦中。
+*   **技術延展**：在元件拆分上，我們借鑑了其簡潔的 Props 與 Emits 通訊機制。`ItemCard.vue` 專注於渲染 UI 並將事件 `emit` 向上傳送給 `App.vue` 進行狀態修正，使得前端程式碼具備高複用性，這在大量資料流過濾時發揮了極大的效能優勢。
+
+### 🎨 3. HTML & CSS：極致的響應式網頁設計 (RWD) 與美學
+*   **參考借鑑**：該開源專案在 HTML5 結構與 CSS layout 布局上，展示了如何使用彈性盒子 (Flexbox) 與網格 (CSS Grid) 實現精確的響應式網頁設計（相容手機、平板與桌機）。我們借鑑了其 HTML5 的語意化網格分層，確保大廳物品卡片、側邊欄購物車與通知中心在不同螢幕尺寸下皆能對齊。
+*   **技術延展**：該專案主要使用傳統的 Bootstrap 樣式，我們在此基礎上大膽進行了美學升級。手寫 Vanilla CSS 實作了「流動玻璃 (Liquid Glass)」質感，利用 `backdrop-filter: blur(16px)` 與柔和的擴散陰影，並重新設計了「左右分割質感登入版面 (Split Auth Layout)」，使得整個介面看起來比傳統模板更具現代高奢感。
